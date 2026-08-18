@@ -1,4 +1,5 @@
 # 🌦️ AI Weather Agent
+[Open AI Weather Agent](https://aiweatheragent-que7fcgavvxu794simgu36.streamlit.app/)
 
 A Streamlit-based AI Weather Agent with hourly weather, 8-day forecasts, date search, date-range weather, live weather, and a Gemini-powered AI Assistant.
 
