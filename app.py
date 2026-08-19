@@ -24,8 +24,8 @@ st.set_page_config(
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
-# India PIN code API
-PINCODE_URL = "https://api.postalpincode.in/postoffice"
+# PincodeAPI.in
+PIN_URL = "https://api.pincodeapi.in/api/v1/search"
 
 
 # =========================================================
@@ -53,77 +53,118 @@ CURRENT_FIELDS = ",".join([
 
 
 # =========================================================
-# GET PINCODE / POST OFFICE DATA
+# PINCODE SEARCH
 # =========================================================
 
-def get_postal_locations(search_text):
+def search_pincode_locations(search_text):
 
     try:
 
         response = requests.get(
-            f"{PINCODE_URL}/{search_text}",
-            timeout=15
+            PIN_URL,
+            params={
+                "q": search_text,
+                "limit": 500
+            },
+            timeout=20
         )
 
         response.raise_for_status()
 
-        data = response.json()
+        payload = response.json()
+
+        if not isinstance(payload, dict):
+            return []
+
+        if payload.get("status") != "success":
+            return []
+
+        data = payload.get(
+            "data",
+            []
+        )
 
         if not isinstance(data, list):
             return []
 
-        if not data:
-            return []
+        locations = []
 
-        if data[0].get("Status") != "Success":
-            return []
+        for office in data:
 
-        offices = data[0].get(
-            "PostOffice",
-            []
-        )
+            if not isinstance(
+                office,
+                dict
+            ):
+                continue
 
-        if not offices:
-            return []
+            office_name = str(
+                office.get(
+                    "officename",
+                    ""
+                )
+            ).strip()
 
-        results = []
+            pincode = str(
+                office.get(
+                    "pincode",
+                    ""
+                )
+            ).strip()
 
-        for office in offices:
+            district = str(
+                office.get(
+                    "district",
+                    ""
+                )
+            ).strip()
 
-            results.append({
-                "post_office": office.get(
-                    "Name",
+            state = str(
+                office.get(
+                    "statename",
                     ""
-                ),
-                "pincode": str(
-                    office.get(
-                        "Pincode",
-                        ""
-                    )
-                ),
-                "district": office.get(
-                    "District",
+                )
+            ).strip()
+
+            office_type = str(
+                office.get(
+                    "officetype",
                     ""
-                ),
-                "state": office.get(
-                    "State",
+                )
+            ).strip()
+
+            delivery = str(
+                office.get(
+                    "delivery",
                     ""
-                ),
-                "division": office.get(
-                    "Division",
-                    ""
-                ),
-                "region": office.get(
-                    "Region",
-                    ""
-                ),
-                "circle": office.get(
-                    "Circle",
-                    ""
-                ),
+                )
+            ).strip()
+
+            latitude = office.get(
+                "latitude"
+            )
+
+            longitude = office.get(
+                "longitude"
+            )
+
+            if not office_name:
+                continue
+
+            if not pincode:
+                continue
+
+            locations.append({
+                "post_office": office_name,
+                "pincode": pincode,
+                "district": district,
+                "state": state,
+                "office_type": office_type,
+                "delivery": delivery,
+                "latitude": latitude,
+                "longitude": longitude,
             })
 
-        return results
+        return locations
 
     except (
         requests.RequestException,
@@ -135,20 +176,21 @@ def get_postal_locations(search_text):
 
 
 # =========================================================
-# GEOCODING
+# OPEN-METEO GEOCODING
 # =========================================================
 
-def geocode_locations(search_text):
+def geocode_city(city):
 
     response = requests.get(
         GEO_URL,
         params={
-            "name": search_text,
+            "name": city,
             "count": 20,
             "language": "en",
             "format": "json",
+            "countryCode": "IN",
         },
-        timeout=15,
+        timeout=20,
     )
 
     response.raise_for_status()
@@ -165,187 +207,250 @@ def geocode_locations(search_text):
 
 
 # =========================================================
-# BUILD LOCATION OPTIONS
+# GET COORDINATES FOR POST OFFICE
 # =========================================================
 
-def build_location_options(
-    search_text
+def get_post_office_coordinates(
+    office_name,
+    district,
+    state
 ):
 
-    geo_results = geocode_locations(
-        search_text
-    )
+    search_queries = [
+        f"{office_name}, {district}, {state}, India",
+        f"{office_name}, {state}, India",
+        f"{district}, {state}, India",
+    ]
 
-    postal_results = get_postal_locations(
-        search_text
-    )
+    for query in search_queries:
 
-    locations = []
+        try:
 
-    # -----------------------------------------------------
-    # Create postal lookup by state + district
-    # -----------------------------------------------------
-
-    postal_by_state_district = {}
-
-    for office in postal_results:
-
-        key = (
-            office["state"].lower().strip(),
-            office["district"].lower().strip()
-        )
-
-        postal_by_state_district.setdefault(
-            key,
-            []
-        ).append(office)
-
-    # -----------------------------------------------------
-    # Match Open-Meteo locations with postal data
-    # -----------------------------------------------------
-
-    for geo in geo_results:
-
-        name = geo.get(
-            "name",
-            search_text
-        )
-
-        state = geo.get(
-            "admin1",
-            ""
-        )
-
-        country = geo.get(
-            "country",
-            ""
-        )
-
-        country_code = geo.get(
-            "country_code",
-            ""
-        )
-
-        latitude = geo.get(
-            "latitude"
-        )
-
-        longitude = geo.get(
-            "longitude"
-        )
-
-        district = geo.get(
-            "admin2",
-            ""
-        )
-
-        # We are primarily interested in India
-        if country_code == "IN":
-
-            key = (
-                state.lower().strip(),
-                district.lower().strip()
+            response = requests.get(
+                GEO_URL,
+                params={
+                    "name": query,
+                    "count": 5,
+                    "language": "en",
+                    "format": "json",
+                    "countryCode": "IN",
+                },
+                timeout=15,
             )
 
-            matching_offices = (
-                postal_by_state_district.get(
-                    key,
-                    []
+            response.raise_for_status()
+
+            results = response.json().get(
+                "results",
+                []
+            )
+
+            if results:
+
+                # Prefer result matching state/district
+                for result in results:
+
+                    result_state = str(
+                        result.get(
+                            "admin1",
+                            ""
+                        )
+                    ).lower()
+
+                    result_district = str(
+                        result.get(
+                            "admin2",
+                            ""
+                        )
+                    ).lower()
+
+                    if (
+                        state.lower() in result_state
+                        or result_state in state.lower()
+                    ) and (
+                        not district
+                        or district.lower() in result_district
+                        or result_district in district.lower()
+                    ):
+
+                        return (
+                            result.get("latitude"),
+                            result.get("longitude"),
+                            result.get("name", office_name)
+                        )
+
+                # fallback to first result
+                result = results[0]
+
+                return (
+                    result.get("latitude"),
+                    result.get("longitude"),
+                    result.get(
+                        "name",
+                        office_name
+                    )
+                )
+
+        except (
+            requests.RequestException,
+            ValueError,
+            TypeError
+        ):
+
+            continue
+
+    return (
+        None,
+        None,
+        office_name
+    )
+
+
+# =========================================================
+# BUILD LOCATION LIST
+# =========================================================
+
+def build_locations(search_text):
+
+    postal_locations = search_pincode_locations(
+        search_text
+    )
+
+    geo_locations = geocode_city(
+        search_text
+    )
+
+    final_locations = []
+
+    # -----------------------------------------------------
+    # FIRST: USE POSTAL SEARCH RESULTS
+    # -----------------------------------------------------
+
+    for office in postal_locations:
+
+        latitude = office[
+            "latitude"
+        ]
+
+        longitude = office[
+            "longitude"
+        ]
+
+        office_name = office[
+            "post_office"
+        ]
+
+        district = office[
+            "district"
+        ]
+
+        state = office[
+            "state"
+        ]
+
+        # API may return null coordinates
+        if (
+            latitude is None
+            or longitude is None
+        ):
+
+            latitude, longitude, _ = (
+                get_post_office_coordinates(
+                    office_name,
+                    district,
+                    state
                 )
             )
 
-            # -------------------------------------------------
-            # If district match not found,
-            # try state match
-            # -------------------------------------------------
+        # Only add location if coordinates exist
+        if (
+            latitude is None
+            or longitude is None
+        ):
+            continue
 
-            if not matching_offices:
+        final_locations.append({
+            "name": office_name,
+            "post_office": office_name,
+            "district": district,
+            "state": state,
+            "country": "India",
+            "pincode": office[
+                "pincode"
+            ],
+            "office_type": office[
+                "office_type"
+            ],
+            "delivery": office[
+                "delivery"
+            ],
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+        })
 
-                matching_offices = [
-                    office
-                    for office in postal_results
-                    if office["state"].lower().strip()
-                    == state.lower().strip()
-                ]
+    # -----------------------------------------------------
+    # SECOND: IF POSTAL SEARCH DID NOT FIND ANYTHING
+    # USE OPEN-METEO CITY RESULTS
+    # -----------------------------------------------------
 
-            # -------------------------------------------------
-            # If postal data found
-            # -------------------------------------------------
+    if not final_locations:
 
-            if matching_offices:
+        for location in geo_locations:
 
-                # Remove duplicate PINs
-                unique_pins = {}
-
-                for office in matching_offices:
-
-                    pin = office["pincode"]
-
-                    if pin and pin not in unique_pins:
-
-                        unique_pins[pin] = office
-
-                for pin, office in unique_pins.items():
-
-                    locations.append({
-                        "name": name,
-                        "state": state,
-                        "country": country,
-                        "district": (
-                            district
-                            or office["district"]
-                        ),
-                        "post_office": office[
-                            "post_office"
-                        ],
-                        "pincode": pin,
-                        "latitude": latitude,
-                        "longitude": longitude,
-                    })
-
-            else:
-
-                locations.append({
-                    "name": name,
-                    "state": state,
-                    "country": country,
-                    "district": district,
-                    "post_office": "",
-                    "pincode": "Not available",
-                    "latitude": latitude,
-                    "longitude": longitude,
-                })
-
-        # -----------------------------------------------------
-        # Non-India location
-        # -----------------------------------------------------
-
-        else:
-
-            locations.append({
-                "name": name,
-                "state": state,
-                "country": country,
-                "district": district,
+            final_locations.append({
+                "name": location.get(
+                    "name",
+                    search_text
+                ),
                 "post_office": "",
-                "pincode": "Not available",
-                "latitude": latitude,
-                "longitude": longitude,
+                "district": location.get(
+                    "admin2",
+                    ""
+                ),
+                "state": location.get(
+                    "admin1",
+                    ""
+                ),
+                "country": location.get(
+                    "country",
+                    "India"
+                ),
+                "pincode": (
+                    ", ".join(
+                        location.get(
+                            "postcodes",
+                            []
+                        )
+                    )
+                    if location.get(
+                        "postcodes"
+                    )
+                    else "Not available"
+                ),
+                "office_type": "",
+                "delivery": "",
+                "latitude": location.get(
+                    "latitude"
+                ),
+                "longitude": location.get(
+                    "longitude"
+                ),
             })
 
     # -----------------------------------------------------
-    # Remove duplicates
+    # REMOVE DUPLICATES
     # -----------------------------------------------------
 
     unique_locations = []
+
     seen = set()
 
-    for location in locations:
+    for location in final_locations:
 
         key = (
-            location["name"].lower(),
-            location["state"].lower(),
+            location["post_office"].lower(),
             location["district"].lower(),
+            location["state"].lower(),
             location["pincode"],
             round(
                 float(location["latitude"]),
@@ -357,13 +462,14 @@ def build_location_options(
             )
         )
 
-        if key not in seen:
+        if key in seen:
+            continue
 
-            seen.add(key)
+        seen.add(key)
 
-            unique_locations.append(
-                location
-            )
+        unique_locations.append(
+            location
+        )
 
     return unique_locations
 
@@ -599,7 +705,7 @@ def rows_for_date(
 
 
 # =========================================================
-# GEMINI
+# GEMINI KEY
 # =========================================================
 
 def get_gemini_key():
@@ -620,6 +726,10 @@ def get_gemini_key():
         "GEMINI_API_KEY"
     )
 
+
+# =========================================================
+# AI WEATHER ASSISTANT
+# =========================================================
 
 def ask_ai(
     question,
@@ -646,13 +756,15 @@ You are the AI weather assistant for {location_name}.
 
 Rules:
 
-- Reply in the same language style as the user.
-- Use supplied weather data for weather facts.
+- Reply in the same language style as the user:
+  English, Hindi, or Hinglish.
+- Use only the supplied weather data for weather facts.
 - Never invent temperature, rain chance, time or condition.
-- If requested data is unavailable, say so.
-- Keep answers friendly and concise.
+- If requested data is unavailable, say that clearly.
+- Give practical weather advice when useful.
+- Keep the answer friendly and concise.
 
-Weather data:
+Hourly weather data:
 
 {weather_context}
 
@@ -699,7 +811,7 @@ User question:
         if not candidates:
 
             return (
-                "AI could not generate a response."
+                "AI could not generate a response right now."
             )
 
         parts = candidates[0].get(
@@ -762,14 +874,14 @@ st.title(
 )
 
 st.caption(
-    "Search location • Select exact location • "
+    "Search Location • Select Exact Place • "
     "PIN Code • Live Weather • Next 24 Hours • "
     "AI Assistant • 8-Day Forecast"
 )
 
 
 # =========================================================
-# SEARCH
+# SEARCH INPUT
 # =========================================================
 
 city = st.text_input(
@@ -778,46 +890,33 @@ city = st.text_input(
 )
 
 
-# =========================================================
-# RESET SELECTION WHEN SEARCH CHANGES
-# =========================================================
-
-if (
-    "last_search" not in st.session_state
-    or st.session_state.last_search
-    != city.strip().lower()
-):
-
-    st.session_state.last_search = (
-        city.strip().lower()
-    )
-
-    st.session_state.selected_location = None
-
-
-# =========================================================
-# FIND LOCATIONS
-# =========================================================
-
 if not city.strip():
 
     st.info(
-        "Enter a city or location above."
+        "Enter a city or location above to start."
     )
 
     st.stop()
 
 
+# =========================================================
+# SEARCH LOCATIONS
+# =========================================================
+
 try:
 
-    locations = build_location_options(
-        city.strip()
-    )
+    with st.spinner(
+        "Searching locations and PIN codes..."
+    ):
+
+        locations = build_locations(
+            city.strip()
+        )
 
 except requests.RequestException as exc:
 
     st.error(
-        f"Could not connect to location service: {exc}"
+        f"Location service error: {exc}"
     )
 
     st.stop()
@@ -826,24 +925,23 @@ except requests.RequestException as exc:
 if not locations:
 
     st.error(
-        "No matching locations found. "
-        "Try another spelling or a nearby city."
+        "No matching location found."
     )
 
     st.stop()
 
 
 # =========================================================
-# LOCATION SELECTION
+# LOCATION SELECTOR
 # =========================================================
 
 st.subheader(
-    "📍 Select Your Location"
+    "📍 Select Your Exact Location"
 )
 
-st.write(
+st.info(
     f"Found {len(locations)} matching location(s). "
-    "Select the place you actually want."
+    "Select the place you want to see weather for."
 )
 
 
@@ -869,15 +967,16 @@ for index, location in enumerate(
         "pincode"
     ]
 
-    name = location[
-        "name"
+    office_type = location[
+        "office_type"
     ]
 
     if post_office:
 
         label = (
             f"{index + 1}. "
-            f"{post_office} — "
+            f"{post_office} "
+            f"({office_type}) — "
             f"{district}, {state} "
             f"• PIN: {pincode}"
         )
@@ -886,7 +985,7 @@ for index, location in enumerate(
 
         label = (
             f"{index + 1}. "
-            f"{name} — "
+            f"{location['name']} — "
             f"{district}, {state} "
             f"• PIN: {pincode}"
         )
@@ -898,10 +997,11 @@ for index, location in enumerate(
 
 selected_index = st.selectbox(
     "Choose location",
-    range(len(location_labels)),
+    range(
+        len(location_labels)
+    ),
     format_func=lambda i:
-        location_labels[i],
-    key="location_selector"
+        location_labels[i]
 )
 
 
@@ -911,12 +1011,12 @@ selected_location = locations[
 
 
 # =========================================================
-# SELECTED LOCATION DETAILS
+# SELECTED LOCATION
 # =========================================================
 
 st.success(
     f"📍 Selected: "
-    f"{selected_location['name']}, "
+    f"{selected_location['post_office'] or selected_location['name']}, "
     f"{selected_location['district']}, "
     f"{selected_location['state']}, "
     f"{selected_location['country']} "
@@ -924,14 +1024,14 @@ st.success(
 )
 
 
-if selected_location[
-    "post_office"
-]:
-
-    st.caption(
-        f"📮 Post Office: "
-        f"{selected_location['post_office']}"
-    )
+st.caption(
+    f"📮 Post Office: "
+    f"{selected_location['post_office'] or 'N/A'}"
+    f"  |  "
+    f"📍 Coordinates: "
+    f"{selected_location['latitude']:.5f}, "
+    f"{selected_location['longitude']:.5f}"
+)
 
 
 # =========================================================
@@ -940,10 +1040,14 @@ if selected_location[
 
 try:
 
-    weather = fetch_weather(
-        selected_location["latitude"],
-        selected_location["longitude"]
-    )
+    with st.spinner(
+        "Loading weather..."
+    ):
+
+        weather = fetch_weather(
+            selected_location["latitude"],
+            selected_location["longitude"]
+        )
 
 except requests.RequestException as exc:
 
@@ -963,7 +1067,7 @@ except ValueError as exc:
 
 
 # =========================================================
-# PREPARE WEATHER DATA
+# PREPARE DATA
 # =========================================================
 
 rows = hourly_rows(
@@ -1135,8 +1239,11 @@ with tabs[2]:
         answer = ask_ai(
             question,
             rows,
-            f"{selected_location['name']}, "
-            f"{selected_location['state']}"
+            (
+                f"{selected_location['post_office'] or selected_location['name']}, "
+                f"{selected_location['district']}, "
+                f"{selected_location['state']}"
+            )
         )
 
         st.session_state.chat_history.append({
@@ -1310,6 +1417,6 @@ st.divider()
 
 st.caption(
     "Weather: Open-Meteo • "
-    "Postal information: India Post Pincode API • "
+    "PIN/Post Office: PincodeAPI.in • "
     "AI: Gemini"
 )
