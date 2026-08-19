@@ -24,6 +24,9 @@ st.set_page_config(
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Free Indian Pincode API
+PINCODE_URL = "https://api.pincodeapi.in/api/v1/search"
+
 
 # =========================================================
 # WEATHER FIELDS
@@ -51,6 +54,182 @@ CURRENT_FIELDS = ",".join([
 
 
 # =========================================================
+# PINCODE LOOKUP
+# =========================================================
+
+def get_pincode(city, state=""):
+
+    try:
+
+        # First search with city name
+        response = requests.get(
+            PINCODE_URL,
+            params={
+                "q": city,
+                "limit": 50
+            },
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+
+        # API normally returns:
+        # {
+        #   "status": "success",
+        #   "data": [...]
+        # }
+
+        data = result.get("data", [])
+
+        if not isinstance(data, list):
+            return "Not available"
+
+        # -------------------------------------------------
+        # Match city + state
+        # -------------------------------------------------
+
+        city_lower = city.strip().lower()
+        state_lower = state.strip().lower()
+
+        matched = []
+
+        for office in data:
+
+            office_name = str(
+                office.get("officename", "")
+            ).lower()
+
+            office_state = str(
+                office.get("statename", "")
+            ).lower()
+
+            office_pincode = str(
+                office.get("pincode", "")
+            ).strip()
+
+            if not office_pincode:
+                continue
+
+            # State must match if available
+            state_match = (
+                not state_lower
+                or state_lower in office_state
+                or office_state in state_lower
+            )
+
+            # City can appear in office name
+            city_match = (
+                city_lower in office_name
+                or city_lower in office_state
+                or city_lower in str(
+                    office.get("district", "")
+                ).lower()
+            )
+
+            if state_match and city_match:
+
+                matched.append(
+                    office_pincode
+                )
+
+        # -------------------------------------------------
+        # If exact city/state matching worked
+        # -------------------------------------------------
+
+        if matched:
+
+            # Remove duplicates while preserving order
+            unique_pins = list(
+                dict.fromkeys(matched)
+            )
+
+            return ", ".join(
+                unique_pins[:5]
+            )
+
+        # -------------------------------------------------
+        # Second fallback:
+        # Match state only
+        # -------------------------------------------------
+
+        state_matched = []
+
+        for office in data:
+
+            office_state = str(
+                office.get("statename", "")
+            ).lower()
+
+            office_pincode = str(
+                office.get("pincode", "")
+            ).strip()
+
+            if (
+                office_pincode
+                and state_lower
+                and (
+                    state_lower in office_state
+                    or office_state in state_lower
+                )
+            ):
+
+                state_matched.append(
+                    office_pincode
+                )
+
+        if state_matched:
+
+            unique_pins = list(
+                dict.fromkeys(state_matched)
+            )
+
+            return ", ".join(
+                unique_pins[:5]
+            )
+
+        # -------------------------------------------------
+        # Final fallback:
+        # Return first valid PIN
+        # -------------------------------------------------
+
+        all_pins = []
+
+        for office in data:
+
+            pincode = str(
+                office.get("pincode", "")
+            ).strip()
+
+            if pincode:
+
+                all_pins.append(
+                    pincode
+                )
+
+        if all_pins:
+
+            unique_pins = list(
+                dict.fromkeys(all_pins)
+            )
+
+            return ", ".join(
+                unique_pins[:5]
+            )
+
+    except requests.RequestException:
+
+        pass
+
+    except Exception:
+
+        pass
+
+    return "Not available"
+
+
+# =========================================================
 # GEOCODING
 # =========================================================
 
@@ -60,7 +239,7 @@ def geocode_city(city):
         GEO_URL,
         params={
             "name": city,
-            "count": 1,
+            "count": 5,
             "language": "en",
             "format": "json",
         },
@@ -69,25 +248,57 @@ def geocode_city(city):
 
     response.raise_for_status()
 
-    results = response.json().get("results", [])
+    results = response.json().get(
+        "results",
+        []
+    )
 
     if not results:
         return None
 
-    location = results[0]
+    # -----------------------------------------------------
+    # Prefer India when user searches Indian city
+    # -----------------------------------------------------
 
-    # PIN CODE
-    postcodes = location.get("postcodes", [])
+    india_results = [
+        location
+        for location in results
+        if location.get("country_code") == "IN"
+    ]
 
-    if isinstance(postcodes, list):
-        pin_code = ", ".join(postcodes) if postcodes else "Not available"
+    if india_results:
+        location = india_results[0]
     else:
-        pin_code = str(postcodes) if postcodes else "Not available"
+        location = results[0]
+
+    city_name = location.get(
+        "name",
+        city
+    )
+
+    state_name = location.get(
+        "admin1",
+        ""
+    )
+
+    country_name = location.get(
+        "country",
+        ""
+    )
+
+    # -----------------------------------------------------
+    # Get PIN from separate PIN API
+    # -----------------------------------------------------
+
+    pin_code = get_pincode(
+        city_name,
+        state_name
+    )
 
     return {
-        "name": location["name"],
-        "state": location.get("admin1", ""),
-        "country": location.get("country", ""),
+        "name": city_name,
+        "state": state_name,
+        "country": country_name,
         "pin_code": pin_code,
         "latitude": location["latitude"],
         "longitude": location["longitude"],
@@ -118,7 +329,9 @@ def fetch_weather(latitude, longitude):
     data = response.json()
 
     if "hourly" not in data:
-        raise ValueError("Weather API returned no hourly data.")
+        raise ValueError(
+            "Weather API returned no hourly data."
+        )
 
     return data
 
@@ -160,7 +373,10 @@ def weather_label(code):
         99: "Thunderstorm with heavy hail",
     }
 
-    return labels.get(code, "Unknown")
+    return labels.get(
+        code,
+        "Unknown"
+    )
 
 
 # =========================================================
@@ -173,19 +389,37 @@ def hourly_rows(data):
 
     rows = []
 
-    for i, timestamp in enumerate(hourly["time"]):
+    for i, timestamp in enumerate(
+        hourly["time"]
+    ):
 
-        local_dt = datetime.fromisoformat(timestamp)
+        local_dt = datetime.fromisoformat(
+            timestamp
+        )
 
         rows.append({
             "Date": local_dt.date().isoformat(),
-            "Time": local_dt.strftime("%I:%M %p"),
-            "Temperature (°C)": hourly["temperature_2m"][i],
-            "Feels Like (°C)": hourly["apparent_temperature"][i],
-            "Humidity (%)": hourly["relative_humidity_2m"][i],
-            "Rain Chance (%)": hourly["precipitation_probability"][i],
-            "Rain (mm)": hourly["precipitation"][i],
-            "Wind (km/h)": hourly["wind_speed_10m"][i],
+            "Time": local_dt.strftime(
+                "%I:%M %p"
+            ),
+            "Temperature (°C)": hourly[
+                "temperature_2m"
+            ][i],
+            "Feels Like (°C)": hourly[
+                "apparent_temperature"
+            ][i],
+            "Humidity (%)": hourly[
+                "relative_humidity_2m"
+            ][i],
+            "Rain Chance (%)": hourly[
+                "precipitation_probability"
+            ][i],
+            "Rain (mm)": hourly[
+                "precipitation"
+            ][i],
+            "Wind (km/h)": hourly[
+                "wind_speed_10m"
+            ][i],
             "Condition": weather_label(
                 hourly["weather_code"][i]
             ),
@@ -200,16 +434,20 @@ def hourly_rows(data):
 
 def get_api_today(data):
 
-    timezone_name = data.get("timezone")
+    timezone_name = data.get(
+        "timezone"
+    )
 
     if timezone_name:
 
         try:
+
             return datetime.now(
                 ZoneInfo(timezone_name)
             ).date()
 
         except Exception:
+
             pass
 
     return datetime.fromisoformat(
@@ -221,7 +459,10 @@ def get_api_today(data):
 # ROWS FOR SPECIFIC DATE
 # =========================================================
 
-def rows_for_date(rows, selected_date):
+def rows_for_date(
+    rows,
+    selected_date
+):
 
     target = selected_date.isoformat()
 
@@ -236,24 +477,31 @@ def rows_for_date(rows, selected_date):
 # NEXT 24 HOURS
 # =========================================================
 
-def next_24_hour_rows(rows, data):
+def next_24_hour_rows(
+    rows,
+    data
+):
 
-    timezone_name = data.get("timezone")
+    timezone_name = data.get(
+        "timezone"
+    )
 
     try:
 
         if timezone_name:
+
             now_local = datetime.now(
                 ZoneInfo(timezone_name)
             )
+
         else:
+
             now_local = datetime.now()
 
     except Exception:
 
         now_local = datetime.now()
 
-    # Remove timezone for comparison with API local timestamps
     now_naive = now_local.replace(
         tzinfo=None,
         minute=0,
@@ -277,6 +525,7 @@ def next_24_hour_rows(rows, data):
             )
 
         except Exception:
+
             continue
 
     all_rows.sort(
@@ -284,25 +533,32 @@ def next_24_hour_rows(rows, data):
     )
 
     if not all_rows:
+
         return []
 
-    # Find current forecast hour
     start_index = None
 
-    for index, (row_dt, row) in enumerate(all_rows):
+    for index, (
+        row_dt,
+        row
+    ) in enumerate(all_rows):
 
         if row_dt >= now_naive:
+
             start_index = index
+
             break
 
-    # If current time is after all available rows
     if start_index is None:
+
         return []
 
     return [
         row
-        for _, row in all_rows[
-            start_index:start_index + 24
+        for _, row
+        in all_rows[
+            start_index:
+            start_index + 24
         ]
     ]
 
@@ -316,19 +572,29 @@ def get_gemini_key():
     try:
 
         if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
+
+            return st.secrets[
+                "GEMINI_API_KEY"
+            ]
 
     except Exception:
+
         pass
 
-    return os.getenv("GEMINI_API_KEY")
+    return os.getenv(
+        "GEMINI_API_KEY"
+    )
 
 
 # =========================================================
 # AI WEATHER ASSISTANT
 # =========================================================
 
-def ask_ai(question, rows, location_name):
+def ask_ai(
+    question,
+    rows,
+    location_name
+):
 
     api_key = get_gemini_key()
 
@@ -464,7 +730,9 @@ User question:
 # APP TITLE
 # =========================================================
 
-st.title("🌦️ AI Weather Agent")
+st.title(
+    "🌦️ AI Weather Agent"
+)
 
 st.caption(
     "City search • Live Weather • Next 24 Hours • "
@@ -505,7 +773,8 @@ try:
 except requests.RequestException as exc:
 
     st.error(
-        f"Could not connect to the location service: {exc}"
+        "Could not connect to the location service: "
+        f"{exc}"
     )
 
     st.stop()
@@ -562,7 +831,9 @@ except ValueError as exc:
 # PREPARE DATA
 # =========================================================
 
-rows = hourly_rows(weather)
+rows = hourly_rows(
+    weather
+)
 
 available_dates = sorted(
     {
@@ -714,7 +985,6 @@ with tabs[2]:
 
         st.session_state.chat_history = []
 
-
     for message in st.session_state.chat_history:
 
         with st.chat_message(
@@ -725,11 +995,9 @@ with tabs[2]:
                 message["content"]
             )
 
-
     question = st.chat_input(
         "Ask: Aaj 7 baje baarish hogi?"
     )
-
 
     if question:
 
@@ -810,7 +1078,6 @@ with tabs[4]:
         available_dates[-1]
     ).date()
 
-
     selected_date = st.date_input(
         "Select date",
         value=min_date,
@@ -819,12 +1086,10 @@ with tabs[4]:
         key="specific_date"
     )
 
-
     selected_rows = rows_for_date(
         rows,
         selected_date
     )
-
 
     if selected_rows:
 
@@ -860,9 +1125,7 @@ with tabs[5]:
         available_dates[-1]
     ).date()
 
-
     col1, col2 = st.columns(2)
-
 
     start_date = col1.date_input(
         "Start date",
@@ -872,7 +1135,6 @@ with tabs[5]:
         key="range_start"
     )
 
-
     end_date = col2.date_input(
         "End date",
         value=min_date,
@@ -880,7 +1142,6 @@ with tabs[5]:
         max_value=max_date,
         key="range_end"
     )
-
 
     if start_date > end_date:
 
@@ -897,7 +1158,6 @@ with tabs[5]:
             <= row["Date"]
             <= end_date.isoformat()
         ]
-
 
         if range_rows:
 
@@ -929,5 +1189,7 @@ with tabs[5]:
 st.divider()
 
 st.caption(
-    "Weather data: Open-Meteo • AI: Gemini REST API"
+    "Weather data: Open-Meteo • "
+    "PIN data: PincodeAPI.in • "
+    "AI: Gemini REST API"
 )
