@@ -76,9 +76,19 @@ def geocode_city(city):
 
     location = results[0]
 
+    # PIN CODE
+    postcodes = location.get("postcodes", [])
+
+    if isinstance(postcodes, list):
+        pin_code = ", ".join(postcodes) if postcodes else "Not available"
+    else:
+        pin_code = str(postcodes) if postcodes else "Not available"
+
     return {
         "name": location["name"],
+        "state": location.get("admin1", ""),
         "country": location.get("country", ""),
+        "pin_code": pin_code,
         "latitude": location["latitude"],
         "longitude": location["longitude"],
     }
@@ -510,8 +520,15 @@ if not location:
     st.stop()
 
 
+# =========================================================
+# LOCATION DETAILS
+# =========================================================
+
 st.success(
-    f"📍 {location['name']}, {location['country']}"
+    f"📍 {location['name']}, "
+    f"{location['state']}, "
+    f"{location['country']} "
+    f"• PIN: {location['pin_code']}"
 )
 
 
